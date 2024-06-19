@@ -55,6 +55,7 @@ QueryDSL 도 Creteria처럼 JPQL 빌더 역할을 한다. QueryDSL의 장점은 
 그리고 **작성한 코드도 JPQL과 비슷**해서 한눈에 들어온다.  
 
 ## JPQL
+
 ### JPQL의 특징
 - JPQL은 객체지향 쿼리 언어다. 따라서 테이블을 대상으로 쿼리하는 것이 아니라 엔티티 객체를 대상으로 쿼리한다.
 - JPQL은 SQL을 추상화해서 특정 데이터베이스 SQL에 의존하지 않는다.
@@ -807,4 +808,173 @@ JPQL도 SQL처럼 서브 쿼리를 지원한다. 여기에는 몇 가지 제약�
       //사용자 이름이 '관리자'면 null을 반환하고 나머지는 본인의 이름을 반환
       select nullif(m.username, '관리자') from Member m
       ```
+### 다형성 쿼리
+JPQL로 부모 엔티티를 조회하면 그 자식 엔티티도 함께 조회한다.  
+```
+@Entity
+@Ingeritance(strategy = IngeritanctType.SINGLE_TABLE)
+@DiscriminatorColumn(name = "DTYPE")
+public abstract class Item {..}
+
+@Entity
+@DiscriminatorValue("B")
+public class Book extemds Item {
+  ...
+  private String author;
+}
+
+//Album, Movie 생략
+```
+위와 같이 Item의 자식으로 Book, Album, Movie 가 있다. 다음과 같이 조회하면 Item의 자식도 함께 조회한다.  
+```
+List resultList = 
+  em.createQuery("select i from Item i").getResultList();
+```
+단일 테이블 전략(**InheritanceType.SINGLE_TABLE**)을 사용할 때 실행되는 SQL은 다음과 같다.
+```
+SELECT * FROM ITEM
+```
+조인 전략(**InheritanceType.JOINED**)을 사용할 때 실행되는 SQL은 다음과 같다.
+```
+SELECT 
+  i.ITEM_ID, i.DTYPE, i.name, i.price, i.stockQuantity,
+  b.author, b.isbn,
+  a.artist, a.etc,
+  m.actor, m.director
+FROM
+  Item i
+left outer join
+  Book b on i.ITEM_ID = b.ITEM_ID
+left outer join
+  Album a on i.ITEM_ID = a.ITEM_ID
+left outer join
+  Movie m on i.ITEM_ID = m.ITEM_ID
+```
+- **TYPE**
+  - TYPE 은 엔티티 **상속 구조에서 조회 대상을 특정 자식 타입으로 한정**할 때 주로 사용한다.
+  ```
+  //Item 중에 Book, Movie를 조회
+  //JPQL
+  select i from Item i
+  where type(i) IN (Book, Movie)
   
+  //SQL
+  SELECT i FROM Item i
+  WHERE i.DTYPE in ('B', 'M')
+  ```
+- **TREAT(JPA 2.1)**
+  - TREAT은 자바의 타입 캐스팅과 비슷하다.
+  - 상속 구조에서 **부모 타입을 특정 자식 타입으로 다룰 때 사용**한다.
+  - JPA 표준은 FROM, WHERE 절에서 사용할 수 있지만, 하이버네이트는 SELECT 절에서도 TREAT를 사용할 수 있다.
+  ```
+  //부모인 Item 과 자식 Book이 있다.
+  //JPQL
+  select i from Item i where treat(i as Book).author = 'kim'
+  
+  //SQL
+  select i.* from Item i
+  where
+    i.DTYPE = 'B'
+    and i.author = 'kim'
+  ```
+  - JPQL을 보면 **treat를 사용해서 부모 타입인 Item 을 자식 타입인 Book으로 다룬다.**
+
+### 기타 정리
+- **enum은 = 비교 연산만 지원**한다.
+- **임베디드 타입은 비교를 지원하지 않는다.**
+- **EMPTY STRING**
+  - JPA 표준은 '' 을 길이 0인 Empty String 으로 정했지만, 데이터베이스에 따라 ''를 NULL로 사용하는 데이터베이스도 있기에 확인하고 사용해야 한다.
+- **NULL 정의**
+  - **조건을 만족하는 데이터가 하나도 없으면 NULL 이다.**
+  - NULL은 알 수 없는 값(unknown value)이다. **NULL과의 모든 수학적 계산 결과는 NULL**이 된다.
+  - Null==Null 은 알 수 없는 값이다.
+  - Null is Null 은 참이다
+
+### 엔티티 직접 사용
+- **기본 키 값**
+  - **객체 인스턴스는 참조 값으로 식별**하고 **테이블 로우는 기본 키 값으로 식별**한다.
+  - JPQL에서 엔티티 객체를 직접 사용하면 SQL에서는 해당 엔티티의 기본 키 값을 사용한다.
+  ```
+  select count(m.id) from Member m //엔티티의 아이디를 사용
+  select count(m) from Member m //엔티티를 직접 사용
+  ```
+  - 두 번째의 count(m)은 엔티티의 별칭을 직접 넘겨주었다.
+  - 이렇게 **엔티티를 직접 사용하면 JPQL이 SQL로 변환될 때 해당 엔티티의 기본 키를 사용**한다.
+  ```
+  //엔티티를 파라미터로 직접 받는 코드
+  String qlString = "select m from Member m where m = :member";
+  List resultList = 
+    em.createQuery(qlString)
+      .setParameter("member", member)
+      .getResultList();
+  
+  //실행된 SQL
+  select m.*
+  from Member m
+  where m.id=?
+  ```
+  - 물론 식별자 값을 직접 사용해도 결과는 같다!
+- **외래 키 값**
+  ```
+  //외래 키 대신에 엔티티를 직접 사용하는 코드
+  Team team = em.find(Team.class, 1L);
+  
+  String qlString = "select m from Member m where m.team = :team";
+  List resultList =
+    em.createQuery(qlString)
+      .setParameter("team", team)
+      .getResultList();
+  
+  //실행된 SQL
+  select m.*
+  from Member m
+  where m.team_id=?(팀 파라미터의 ID 값)
+  ```
+  - Member 와 Team 간에 묵시적 조인이 일어날 것 같지만, MEMBER 테이블이 team_id 외래키를 가지고 있으므로 **묵시적 조인은 일어나지 않는다.**
+  - 물론 m.team.name을 호출하면 묵시적 조인이 일어난다.
+  - 따라서 m.team을 사용하든 m.team.id를 사용하든 생성되는 SQL은 같다.
+
+### Named 쿼리: 정적 쿼리
+- **동적 쿼리**
+  - `em.createQuery("select ..")` 처럼 JPQL을 문자로 완성해서 직접 넘기는 것을 동적 쿼리라 한다.
+  - 런타임에 특정 조건에 따라 JPQL을 동적으로 구성할 수 있다.
+- **정적 쿼리**
+  - **미리 정의한 쿼리에 이름을 부여해서 필요할 때 사용할 수 있는데 이것을 Named 쿼리라 한다.**
+  - Named 쿼리는 **한 번 정의하면 변경할 수 없는 정적인 쿼리**다.  
+
+Named 쿼리는 애플리케이션 로딩 시점에 JPQL문법을 체크하고 미리 파싱해둔다.  
+따라서 **오류를 빨리 확인**할 수 있고, 사용하는 시점에는 **파싱된 결과를 재사용 하므로 성능상 이점**도 있다.  
+그리고 Named 쿼리는 변하지 않는 **정적 SQL이 생성**되므로 **데이터베이스 조회 성능 최적화**에도 도움이 된다.  
+Named 쿼리는 `@NamedQuery` 어노테이션을 사용해서 자바 코드에 작성하거나 또는 XML 문서에 작성할 수 있다.
+
+- **Named 쿼리를 어노테이션에 정의**
+  - Named 쿼리는 이름 그대로 쿼리에 이름을 부여해서 사용하는 방법이다.
+  ```
+  @Entity
+  @NamedQuery(
+    name = "Member.findByUsername",
+    query = "select m from Member m where m.username = :username")
+  public class Member {...}
+  
+  //Named 쿼리 사용
+  List<Member> members = 
+    em.createNamedQuery("Member.findByUsername", Member.class)
+      .setParameter("username", "회원1")
+      .getResultList();
+  ```
+  - 하나에 엔티티 2개 이상의 Named 쿼리를 정의하려면 `@NamedQueries` 어노테이션을 사용하면 된다.
+  ```
+  @Entity
+  @NamedQueries({
+    @NamedQuery(
+      name = "Member.findByUsername",
+      query = "select m from Member m where m.username = :username"),
+    @NamedQuery(
+      name = "Member.count",
+      query = "select count(m) from Member m")
+  })
+  public class Member {...}
+  ```
+- **Named 쿼리를 XML에 정의**
+  ![img.png](images/Named쿼리XML.png)  
+  ![img.png](images/Named쿼리XML2.png)
